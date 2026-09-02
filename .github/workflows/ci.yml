@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Caches ~/.cargo and target/, keyed on Cargo.lock.
+      - uses: Swatinem/rust-cache@v2
+
+      # LTO and codegen-units=1 only run in the release profile, and this project
+      # treats a release build as the real check.
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Clippy
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --release --locked
+
+      # The TUI needs a real terminal, but --help exits before the alternate
+      # screen, so it is a cheap check that the binary actually starts.
+      - name: Smoke
+        run: ./target/release/ai-session-manager --help

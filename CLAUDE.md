@@ -73,6 +73,8 @@ Viewer: `j k` and arrows scroll, `ctrl-f`/`ctrl-b` and `ctrl-d`/`ctrl-u` page, `
 
 ## Conventions
 
+- CI (`.github/workflows/ci.yml`) runs `cargo build --release --locked`, `cargo clippy --release --all-targets --locked -- -D warnings`, `cargo test --release --locked` and `--help` on every push and PR. Clippy is a hard gate, so keep the tree warning-free; `rustfmt` is deliberately *not* enforced.
+- Releases are cut by pushing a `v*` tag, which triggers `.github/workflows/release.yml`: four targets (x86_64 and aarch64 for linux-musl and macOS), packaged as tarballs with sha256 sums and attached to a generated GitHub release. Adding a target means adding a matrix entry; `cross` covers the Linux ones, native runners the macOS ones.
 - Always finish a code change with `cargo build --release`. Every change — feature, bugfix, refactor, anything — gets a release build before the work is reported as done. A passing `cargo build` or `cargo check` is not sufficient; LTO and `codegen-units = 1` are only exercised by the release profile.
 - Keep startup-time scanning; do not add lazy/streaming file reads unless the in-memory cost becomes a real problem.
 - `parse_session` must read each file to the end. It is tempting to `break` once the title is found, but `custom-title` is appended by renames and so lives at the *end* of the file, and `full_text` needs the whole thing for full-text search and the viewer anyway.

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -254,11 +254,10 @@ impl App {
             RowItem::Dir { folded, .. } => *folded,
             RowItem::Session { kids, folded, .. } => *kids > 0 && *folded,
         };
-        if folded {
-            if let Some(k) = self.fold_key(i) {
+        if folded
+            && let Some(k) = self.fold_key(i) {
                 self.set_folded(k, false);
             }
-        }
     }
 
 
@@ -550,12 +549,11 @@ impl App {
             }
             let dir = path.with_extension("");
             let had_dir = dir.is_dir();
-            if had_dir {
-                if let Err(e) = fs::remove_dir_all(&dir) {
+            if had_dir
+                && let Err(e) = fs::remove_dir_all(&dir) {
                     errors.push(format!("{}: {}", dir.display(), e));
                     ok = false;
                 }
-            }
             if ok {
                 done += 1;
             }
@@ -715,9 +713,9 @@ fn projects_root() -> io::Result<PathBuf> {
     Ok(home.join(".claude").join("projects"))
 }
 
-fn scan_sessions(root: &PathBuf) -> io::Result<Vec<Session>> {
+fn scan_sessions(root: &Path) -> io::Result<Vec<Session>> {
     let mut sessions = Vec::new();
-    let mut stack = vec![(root.clone(), 0usize)];
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, _depth)) = stack.pop() {
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
@@ -731,16 +729,14 @@ fn scan_sessions(root: &PathBuf) -> io::Result<Vec<Session>> {
             };
             if ft.is_dir() {
                 stack.push((path, 0));
-            } else if ft.is_file() {
-                if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                    if let Some(s) = parse_session(&path) {
+            } else if ft.is_file()
+                && path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                    && let Some(s) = parse_session(&path) {
                         sessions.push(s);
                     }
-                }
-            }
         }
     }
-    sessions.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime));
     Ok(sessions)
 }
 
@@ -765,21 +761,18 @@ fn parse_session(path: &PathBuf) -> Option<Session> {
             Err(_) => continue,
         };
 
-        if project_path.is_empty() {
-            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+        if project_path.is_empty()
+            && let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
                 project_path = cwd.to_string();
             }
-        }
-        if let Some(gb) = v.get("gitBranch").and_then(|g| g.as_str()) {
-            if !gb.is_empty() {
+        if let Some(gb) = v.get("gitBranch").and_then(|g| g.as_str())
+            && !gb.is_empty() {
                 git_branch = gb.to_string();
             }
-        }
-        if started_at.is_empty() {
-            if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
+        if started_at.is_empty()
+            && let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
                 started_at = ts.get(..10).unwrap_or(ts).to_string();
             }
-        }
         if let Some(mc) = v.get("messageCount").and_then(|m| m.as_u64()) {
             reported_msg_count = reported_msg_count.max(mc as u32);
         }
@@ -787,26 +780,24 @@ fn parse_session(path: &PathBuf) -> Option<Session> {
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if ty == "custom-title" {
             // A rename appends this record; the newest one wins.
-            if let Some(t) = v.get("customTitle").and_then(|t| t.as_str()) {
-                if !t.is_empty() {
+            if let Some(t) = v.get("customTitle").and_then(|t| t.as_str())
+                && !t.is_empty() {
                     custom_title = t.to_string();
                 }
-            }
         } else if ty == "ai-title" && ai_title.is_empty() {
             if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
                 ai_title = t.to_string();
             }
         } else if ty == "user" && v.get("isMeta").and_then(|m| m.as_bool()) != Some(true) {
             user_msg_count = user_msg_count.saturating_add(1);
-            if first_user_content.is_empty() {
-                if let Some(msg) = v.get("message") {
+            if first_user_content.is_empty()
+                && let Some(msg) = v.get("message") {
                     let c = extract_user_text(msg.get("content"));
                     let cleaned = clean_prompt(&c);
                     if !cleaned.is_empty() {
                         first_user_content = cleaned;
                     }
                 }
-            }
         }
     }
 
@@ -1469,6 +1460,7 @@ fn mark_span(m: Mark) -> Span<'static> {
     )
 }
 
+#[allow(clippy::too_many_arguments)] // one parameter per field the line renders
 fn dir_line(
     path: &str,
     count: usize,
@@ -2427,14 +2419,13 @@ fn md_to_lines(src: &str, indent: &str) -> Vec<Line<'static>> {
                 blank!();
                 in_code = true;
                 extra_indent = "  ".to_string();
-                if let CodeBlockKind::Fenced(lang) = kind {
-                    if !lang.is_empty() {
+                if let CodeBlockKind::Fenced(lang) = kind
+                    && !lang.is_empty() {
                         out.push(Line::from(vec![
                             Span::raw(format!("{}  ", indent)),
                             Span::styled(lang.to_string(), Style::default().fg(META)),
                         ]));
                     }
-                }
                 style = Style::default().fg(CODE);
             }
             Event::End(TagEnd::CodeBlock) => {
@@ -2502,6 +2493,8 @@ fn md_to_lines(src: &str, indent: &str) -> Vec<Line<'static>> {
     }
     out
 }
+
+
 
 
 
