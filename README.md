@@ -6,6 +6,20 @@ Claude Code keeps every conversation as a `.jsonl` file under `~/.claude/project
 directory per project. Those files pile up, are named by uuid, and are effectively opaque.
 This indexes them all at startup and puts them in a tree you can search, read and prune.
 
+## Install
+
+Prebuilt binaries for Linux and macOS are attached to each
+[release](../../releases). The Linux builds are statically linked, so they run
+on any distribution regardless of glibc version.
+
+```sh
+tar xzf ai-session-manager-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+./ai-session-manager-v0.1.0-x86_64-unknown-linux-musl/ai-session-manager
+```
+
+Each archive ships with a `.sha256` next to it. macOS binaries are unsigned, so
+the first run needs the usual Gatekeeper override.
+
 ## Build and run
 
 ```sh
@@ -79,6 +93,20 @@ Marks are remembered by path, so a session marked before you filter or fold stay
 **Performance.** Everything is read once at startup and held in memory, so filtering,
 full-text search and opening a transcript never touch the disk. A 46 MB corpus of 45 logs
 loads in well under a second.
+
+## Releasing
+
+`ci.yml` builds, lints and tests every push and pull request. `release.yml`
+fires on a version tag, cross-compiles the four targets and publishes a GitHub
+release with the archives attached:
+
+```sh
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Keep the tag and the `version` in `Cargo.toml` in step; the tag name is what
+ends up in the archive names.
 
 ## License
 
