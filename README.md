@@ -8,18 +8,30 @@ This indexes them all at startup and puts them in a tree you can search, read an
 
 ## Install
 
-Each [release](../../releases) ships a prebuilt Linux x86-64 binary. It is
-statically linked against musl, so it runs on any distribution regardless of
-glibc version and has no runtime dependencies.
+Grab the latest static Linux x86-64 binary. This URL always resolves to the
+newest release:
 
 ```sh
-tar xzf ai-session-manager-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-./ai-session-manager-v0.1.0-x86_64-unknown-linux-musl/ai-session-manager
+wget https://github.com/cpp-serg/ai-session-manager/releases/latest/download/ai-session-manager
+chmod +x ai-session-manager
+./ai-session-manager
 ```
 
-A `.sha256` is published alongside it. For any other platform, build from
-source with the steps below — the dependency tree is pure Rust, so nothing
-beyond a Rust toolchain is required.
+Or as a one-liner into `~/.local/bin`:
+
+```sh
+wget -qO ~/.local/bin/ai-session-manager \
+  https://github.com/cpp-serg/ai-session-manager/releases/latest/download/ai-session-manager \
+  && chmod +x ~/.local/bin/ai-session-manager
+```
+
+The binary is statically linked against musl, so it runs on any distribution
+regardless of glibc version and has no runtime dependencies. A `.sha256` is
+published next to it, along with a versioned `.tar.gz` that also carries the
+README and LICENSE.
+
+For any other platform, build from source with the steps below — the dependency
+tree is pure Rust, so nothing beyond a Rust toolchain is required.
 
 ## Build and run
 

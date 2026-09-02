@@ -41,11 +41,18 @@ jobs:
           cp README.md LICENSE "$dist/"
           tar czf "$dist.tar.gz" "$dist"
           sha256sum "$dist.tar.gz" > "$dist.tar.gz.sha256"
-          file "$dist/$BIN"
+
+          # A second copy under a version-less name, so that
+          # /releases/latest/download/<name> is a stable URL across releases.
+          cp "target/$TARGET/release/$BIN" "$BIN"
+          sha256sum "$BIN" > "$BIN.sha256"
+          file "$BIN"
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
+            ${{ env.BIN }}
+            ${{ env.BIN }}.sha256
             *.tar.gz
             *.tar.gz.sha256
           generate_release_notes: true
