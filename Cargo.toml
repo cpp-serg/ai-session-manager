@@ -1,0 +1,23 @@
+[package]
+name = "ai-session-manager"
+version = "0.1.0"
+edition = "2024"
+authors = ["Sergey Pastukhov <sergey.pastukhov@gmail.com>"]
+license = "MIT"
+description = "AI Session Manager — a terminal browser for Claude Code session logs: fuzzy search, read, rename and prune"
+
+[[bin]]
+name = "ai-session-manager"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+nucleo-matcher = "0.3"
+serde_json = "1"
+dirs = "5"
+pulldown-cmark = { version = "0.13.4", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1

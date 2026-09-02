@@ -1,0 +1,85 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+- `cargo build` — debug build
+- `cargo build --release` — optimized build (LTO enabled in `Cargo.toml`)
+- `cargo run --release` — launch the TUI (requires a real terminal; do not run from a non-TTY harness)
+- `cargo run --release -- --help` — print usage and keys; safe to run from a non-TTY harness, as it exits before the alternate screen is entered
+- `cargo check` — fast type-check without producing a binary
+- `cargo clippy` — lints
+
+There are no tests in the tree; if adding any, run with `cargo test`.
+
+**Verifying the TUI headlessly.** The app cannot be driven from a non-TTY harness, but every part of it can still be checked: build an `App`, feed `KeyEvent`s to `handle_key`, and render with `ratatui::backend::TestBackend`, then read the buffer back as text. That is how the tree, column layout at several widths, filter, help overlay, marking, viewer and rename were each verified. Two cautions learned the hard way:
+
+- `App::new` reads the real `~/.claude/projects`, so a scratch `Session` has to be pushed into `App::sessions` by hand for anything destructive. Never point a test at the user's own logs.
+- Anything that writes (delete, rename) must run against throwaway files under `target/`, cleaned up by the test.
+
+## Architecture
+
+Single-binary Rust TUI (`src/main.rs`) that indexes Claude Code session logs, lets the user fuzzy-filter them, read them, rename them and delete them. There is one source file; the structure below is the conceptual layering inside it.
+
+**Data source.** `~/.claude/projects/` contains one subdirectory per project (directory name is the project path with `/` replaced by `-`). Each `.jsonl` file inside a project directory is one session. Records are newline-delimited JSON objects with no schema guarantees across lines — the app cares about four record shapes:
+
+- any record with a `"cwd"` field → the project's actual filesystem path
+- `{"type":"ai-title","aiTitle":"…"}` → the generated session title
+- `{"type":"custom-title","customTitle":"…"}` → the title the user set with `/rename` or with `r` here
+- `{"type":"user"|"assistant","message":{"content":…}}` → the conversation the viewer renders
+
+`parse_session` reads the whole file line-by-line. It takes the first `cwd`, and for the title prefers the *last* `custom-title`, then the first `ai-title`, then the first user prompt, then `"(untitled)"`. Every one of those names goes into `search_text`, so a renamed session stays findable under the name it used to have. `ai-title` repeats many times in a file and `custom-title` is appended on each rename — never assume one title record per session.
+
+**One pre-scanned session set.** `App::new` walks the projects root once, all the way down, and keeps every `Session` in memory for the life of the app. Subagent transcripts are always read; they are hidden by folding, not by scanning less. There used to be a second shallow scan that `Ctrl-R` switched to, which meant holding a duplicate copy of every session's text — do not reintroduce it. After startup the only disk *writes* are deleting and renaming; the delete confirmation also stats each target to see whether it has a subagent directory.
+
+**Match modes.** `MatchMode::OnlyTitle` matches against `Session.search_text` (every title the session has had, plus the first user prompt); `MatchMode::FullText` matches against `Session.full_text` (the entire file, kept in memory). Both use `nucleo-matcher` with smart case and smart normalization. `App::refresh_results` is the single funnel — every state change (filter edit, mode toggle, scope toggle, fold toggle, delete, rename) calls it.
+
+**Scope.** `Scope::CurrentDir` keeps only sessions whose `project_path` equals the process cwd; `Scope::All` keeps every session on the host. `App::new(force_all)` picks `CurrentDir` when the flag is unset and the scan found at least one session for the cwd, otherwise `All`. `Ctrl-A` toggles at runtime, so `-a`/`--all` only chooses the starting scope.
+
+**Three levels.** A subagent transcript at `<project>/<parent-uuid>/subagents/agent-*.jsonl` is nested under the session that spawned it. `parent_session` derives that link from the path alone — nothing in the jsonl records it — and `Session::parent` holds it. Subagents have no title records, so they display their opening task prompt.
+
+`refresh_results` resolves parents only within the filtered set, so a subagent whose parent was filtered out is promoted to top level rather than vanishing. A session with subagents becomes a foldable node like a directory but keeps the column grid; `h`/`l` fold it and `-` toggles it, while `Enter` still opens the viewer. Session nodes start folded: `App::new` seeds `App::folded` with every path that appears as some session's parent, and `Ctrl-R` folds or unfolds them all at once. `session_node_keys` reads that list from the sessions rather than the rows, so it reaches nodes sitting inside a folded directory. `DEEP_W` is one column on purpose: it puts a child's `├─` directly beneath the parent's `▾`, so widening it breaks that alignment.
+
+**Tree building.** `refresh_results` does not produce a flat result list. It filters, resolves parents, then emits `Vec<RowItem>` as project → session → subagent, skipping the children of anything folded. Every level is ordered by descending `mtime`; directories sort by their newest session, name breaking ties. `RowItem::Dir` carries `count`, `subs`, `msgs` and `children` so the directory line and marking need not re-walk the group at draw time. `RowItem::Session` carries `depth`, `kids` and `folded`.
+
+Fold state lives in `App::folded`, a set of strings keyed by **project path for directories and file path for sessions** — that is what `fold_key` produces, and why it survives filtering, scope changes and rebuilds. Selection indexes into `App::rows`, so anything acting on the selection must handle landing on a `Dir` row: `selected_file` returns `None` there, which is what makes `r` and a bare `d` refuse with a status message, while `Enter` folds the directory instead of opening anything.
+
+**Row rendering.** The tree is a `List`, not a `Table`, because directory nodes and session rows do not share a shape. A directory is one free-form full-width `Line` from `dir_line`: fold marker, path, a dim rule, then aggregate stats and the newest age. A session row is a hand-aligned grid from `session_line`, whose widths come from `cols`, which drops the branch column and then the start date as the terminal narrows. `header_line` labels only the session grid and must be kept in step with `cols`. A `Table` cannot express this, since all its rows share one set of constraints — that is why the project column used to eat a quarter of the width on every session row to say nothing.
+
+**Age colors.** `age_color` maps mtime to green (≤ 1 week), cyan (≤ 1 month), orange `Color::Indexed(208)` (≤ 3 months), then bright red. It is applied to the `last` column of both directory and session rows; a directory shows the age of its newest session.
+
+**Marking.** `App::marked` is a set of file paths, not row indices, so marks survive folding, filtering and scope changes — a session marked while visible stays marked after it is filtered out, which is why the header shows the count. Space on a session toggles it *and its subagents*; space on a directory inverts each child independently, so a partly marked directory swaps its two halves instead of collapsing to all or nothing. `Mark::Implied` renders a dim check on a subagent whose parent is marked.
+
+**Deleting.** Removing a session removes both its `.jsonl` and the sibling directory of the same name, which is where its subagent transcripts live — so deleting a parent always takes its children. `delete_targets` prefers the marked set and falls back to the selected row, then drops any target contained in another target's directory; without that, a marked subagent would fail to delete on a file its parent had already removed. `delete_paths` keeps going after a failure, drops the vanished sessions from memory, and reports the tally rather than aborting midway.
+
+**Renaming.** `r` on a session row opens `InputMode::Rename` seeded with the current title, and `commit_rename` appends a `custom-title` record — the same shape `/rename` writes — to the end of the file, then patches the in-memory `Session` (title, `search_text`, `full_text`, and `mtime` re-read from disk) instead of rescanning. Appending keeps the format append-only, so a rename never rewrites history and the newest record wins on the next parse. Renaming touches the file, so its `mtime` really does change and the row moves to the top of its group — that is correct, not a bug to paper over. Empty and unchanged titles are refused.
+
+**Transcript viewer.** `Enter` on a session row builds a `Viewer` from the already-in-memory `Session.full_text`, so opening never touches disk. `render_transcript` walks the jsonl in file order and emits styled logical lines: user turns, assistant text through the markdown renderer, `tool_use` as a one-line summary from `tool_summary`, and `tool_result` truncated to `TOOL_PREVIEW_LINES` unless expanded. Thinking blocks are hidden by default; `t` and `o` toggle those two and call `Viewer::rebuild`, which re-renders and forces a re-wrap. A session opens scrolled to its last message, which is why `Viewer::pending_end` exists: the bottom is unknown until `draw_viewer` has set the height and wrapped the text, so the jump is deferred to the first draw and then cleared, leaving resizes and later scrolling alone.
+
+Wrapping is done by hand in `wrap_line` rather than by `Paragraph`'s `Wrap`, because scrolling needs an exact wrapped-line count for `G` and for clamping. `Viewer::ensure_wrapped` caches the wrap and redoes it only when the width changes, and `draw_viewer` renders just the visible slice — important, since a large session runs past seventeen thousand wrapped lines. Continuation lines hang-indent under list markers and blockquote bars; `is_list_marker` is what makes that work.
+
+**Markdown.** `md_to_lines` maps `pulldown-cmark` events to ratatui spans. `tui-markdown` was evaluated and rejected: it returns a `Text` from `ratatui-core`, which would force an upgrade from ratatui 0.28 across two breaking releases and drag in `syntect` and the `onig` C library. Keep markdown rendering in-tree unless that calculus changes.
+
+**Modality.** `InputMode::Normal` treats keys as vim-style commands. `/` switches to `InputMode::Filter`, where they are text and `filter_backup` restores the prior filter on Esc; `r` switches to `InputMode::Rename`, which edits `rename_buf`. `Focus` says whether the tree or the viewer owns the keyboard. `handle_key` dispatches in a fixed order: **quit, delete confirmation, help overlay, viewer, rename, filter, tree.** Overlays consume the keystroke, so a key handled by an overlay never reaches the pane beneath it. `pending_g` is the one-key state machine behind `gg`, and must be consumed with `mem::take` at the top of each handler or it leaks into the next keypress.
+
+**TUI loop.** Synchronous: `run` blocks on `event::read`, dispatches to `handle_key`, then redraws. There is no async runtime and no background work. `draw` picks the tree or the viewer from `Focus`, then layers the rename box, help overlay and delete confirmation on top in that order. The tree is a 3-line bordered header (mode chip, filter text, match and mark counts, status) over a bordered pane holding a fixed column header and the scrolling `List`; `ListState` tracks selection over `App::rows`. `q` and `Ctrl-C` both quit.
+
+## Keys
+
+Tree: `j k h l` and arrows move and fold, `gg`/`G` jump, `ctrl-f`/`ctrl-b` page, `ctrl-d`/`ctrl-u` half-page, `-` toggles a node, `Enter` opens a session or folds a directory, `/` filters, `Esc` clears marks then the filter, `space` marks, `d`/`Del` deletes, `r` renames, `ctrl-e` folds everything, `ctrl-r` folds every session node, `ctrl-a` switches scope, `ctrl-t` switches match mode, `F1` helps, `q` quits.
+
+Viewer: `j k` and arrows scroll, `ctrl-f`/`ctrl-b` and `ctrl-d`/`ctrl-u` page, `gg`/`G` jump, `t` toggles thinking, `o` expands tool output, `Esc`/`q` returns to the tree.
+
+## Conventions
+
+- Always finish a code change with `cargo build --release`. Every change — feature, bugfix, refactor, anything — gets a release build before the work is reported as done. A passing `cargo build` or `cargo check` is not sufficient; LTO and `codegen-units = 1` are only exercised by the release profile.
+- Keep startup-time scanning; do not add lazy/streaming file reads unless the in-memory cost becomes a real problem.
+- `parse_session` must read each file to the end. It is tempting to `break` once the title is found, but `custom-title` is appended by renames and so lives at the *end* of the file, and `full_text` needs the whole thing for full-text search and the viewer anyway.
+- CLI args are parsed by hand in `parse_args` — there is no `clap` dependency and two flags do not justify adding one. It returns `None` for `--help` so `main` exits before touching the terminal, and exits 2 on an unknown flag. New flags go there and into the `USAGE` string.
+- Every row starts with a two-column mark gutter, so `cols` is given the width minus `MARK_W` and `header_line` pads by the same amount. Adding a gutter column means touching all three.
+- `ctrl-d` is half-page-down, per vim. Session deletion is `d` or the Delete key. Do not re-bind `ctrl-d` to delete.
+- `handle_key` matches plain `Char(c)` arms before the `Char(c) if ctrl` ones, so any new letter binding needs an `if !ctrl` guard or it will swallow the control-key version. `r` versus `ctrl-r` is exactly this trap, and the compiler only warns about it as an unreachable pattern.
+- `handle_key` has several dispatch paths that return early (see **Modality** for the order). Add new tree bindings to `handle_tree_key`, not to an overlay handler.
+- Key help lives in four places that must stay in sync: `HELP_TREE` and `HELP_VIEWER` for the F1 overlay, the block titles in `draw_tree`/`draw_viewer`, the `USAGE` string for `--help`, and the **Keys** section above.
+- Destructive work (delete, rename) is confirmed or reversible: deletion goes through the `confirm_delete` popup, and renaming only ever appends. Keep it that way.
