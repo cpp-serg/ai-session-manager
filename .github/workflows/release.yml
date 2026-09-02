@@ -8,87 +8,45 @@ on:
 env:
   CARGO_TERM_COLOR: always
   BIN: ai-session-manager
+  TARGET: x86_64-unknown-linux-musl
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # musl builds are fully static, so they run on any Linux regardless of glibc.
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            cross: false
-          - target: x86_64-apple-darwin
-            os: macos-13
-            cross: false
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-musl
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
-      # `cross` runs the build in a container that already has the right linker.
-      - uses: taiki-e/install-action@v2
-        if: matrix.cross
-        with:
-          tool: cross
+      # Nothing in the dependency tree needs a C compiler, so the musl target
+      # builds natively here and the result is a fully static binary that runs
+      # on any distribution regardless of glibc version.
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
-          else
-            cargo build --release --locked --target ${{ matrix.target }}
-          fi
+        run: cargo build --release --locked --target "$TARGET"
 
       - name: Package
         run: |
-          dist="$BIN-${{ github.ref_name }}-${{ matrix.target }}"
+          dist="$BIN-${{ github.ref_name }}-$TARGET"
           mkdir -p "$dist"
-          cp "target/${{ matrix.target }}/release/$BIN" "$dist/"
+          cp "target/$TARGET/release/$BIN" "$dist/"
           cp README.md LICENSE "$dist/"
           tar czf "$dist.tar.gz" "$dist"
-          shasum -a 256 "$dist.tar.gz" > "$dist.tar.gz.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: |
-            *.tar.gz
-            *.tar.gz.sha256
-          if-no-files-found: error
-
-  publish:
-    name: publish release
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: List what is being published
-        run: ls -l dist
+          sha256sum "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          file "$dist/$BIN"
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true

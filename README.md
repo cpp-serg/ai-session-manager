@@ -8,17 +8,18 @@ This indexes them all at startup and puts them in a tree you can search, read an
 
 ## Install
 
-Prebuilt binaries for Linux and macOS are attached to each
-[release](../../releases). The Linux builds are statically linked, so they run
-on any distribution regardless of glibc version.
+Each [release](../../releases) ships a prebuilt Linux x86-64 binary. It is
+statically linked against musl, so it runs on any distribution regardless of
+glibc version and has no runtime dependencies.
 
 ```sh
 tar xzf ai-session-manager-v0.1.0-x86_64-unknown-linux-musl.tar.gz
 ./ai-session-manager-v0.1.0-x86_64-unknown-linux-musl/ai-session-manager
 ```
 
-Each archive ships with a `.sha256` next to it. macOS binaries are unsigned, so
-the first run needs the usual Gatekeeper override.
+A `.sha256` is published alongside it. For any other platform, build from
+source with the steps below — the dependency tree is pure Rust, so nothing
+beyond a Rust toolchain is required.
 
 ## Build and run
 
@@ -97,8 +98,8 @@ loads in well under a second.
 ## Releasing
 
 `ci.yml` builds, lints and tests every push and pull request. `release.yml`
-fires on a version tag, cross-compiles the four targets and publishes a GitHub
-release with the archives attached:
+fires on a version tag, builds the static Linux binary and publishes a GitHub
+release with the archive attached:
 
 ```sh
 git tag -a v0.1.0 -m "v0.1.0"
@@ -106,7 +107,7 @@ git push origin v0.1.0
 ```
 
 Keep the tag and the `version` in `Cargo.toml` in step; the tag name is what
-ends up in the archive names.
+ends up in the archive name.
 
 ## License
 
