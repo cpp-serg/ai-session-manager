@@ -79,7 +79,8 @@ Navigation is vim-style, and arrow keys work everywhere too.
 | `/` | filter; `enter` accepts, `esc` cancels |
 | `esc` | clear marks, then the filter |
 | `space` | mark for deletion; a session takes its subagents, a directory inverts its children |
-| `d` `del` | delete what is marked, else the selected session (asks first) |
+| `d` `del` | delete what is marked, else the selected session (`y`/`enter` confirms) |
+| `c` | resume it: replaces this app with `claude -r <id>`, run from the project's directory |
 | `r` | rename the selected session |
 | `ctrl-e` | fold or unfold everything |
 | `ctrl-r` | fold or unfold every session node |

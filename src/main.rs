@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -61,6 +62,15 @@ enum InputMode {
     Rename,
 }
 
+/// A `claude -r` invocation the run loop should perform once it has released
+/// the terminal. This replaces the process, so it never comes back.
+struct Resume {
+    /// Directory to run in: the session's own project path.
+    cwd: String,
+    /// Session id, which is the log file's stem.
+    id: String,
+}
+
 /// How much of a directory node is marked for deletion.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mark {
@@ -104,6 +114,8 @@ struct App {
     filter: String,
     /// Filter text as it was before the current `/` edit, restored on Esc.
     filter_backup: String,
+    /// Set by `c`; the run loop drops out of the TUI and runs `claude -r` for it.
+    resume: Option<Resume>,
     /// Session being renamed, and the title being typed for it.
     rename_target: Option<PathBuf>,
     rename_buf: String,
@@ -148,6 +160,7 @@ impl App {
             cwd,
             filter: String::new(),
             filter_backup: String::new(),
+            resume: None,
             rename_target: None,
             rename_buf: String::new(),
             input_mode: InputMode::Normal,
@@ -450,6 +463,47 @@ impl App {
         let key = path.to_string_lossy().into_owned();
         self.select_key(&key);
         self.status = Some(format!("renamed to \"{}\"", title));
+    }
+
+    /// Ask the run loop to resume the selected session with the `claude` CLI.
+    /// On a subagent row this resumes the session that spawned it, since an
+    /// `agent-*` transcript is not itself a resumable session id.
+    fn request_resume(&mut self) {
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+        let RowItem::Session { idx, depth, .. } = self.rows[i] else {
+            self.status = Some("select a session to resume".to_string());
+            return;
+        };
+        let Some(s) = self.sessions.get(idx) else {
+            return;
+        };
+        let path = if depth == 2 {
+            match s.parent.clone() {
+                Some(p) => p,
+                None => s.file_path.clone(),
+            }
+        } else {
+            s.file_path.clone()
+        };
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
+            return;
+        };
+        let cwd = self.title_owner(&path).unwrap_or_else(|| s.project_path.clone());
+        if !std::path::Path::new(&cwd).is_dir() {
+            self.status = Some(format!("project directory is gone: {}", cwd));
+            return;
+        }
+        self.resume = Some(Resume { cwd, id });
+    }
+
+    /// The `project_path` recorded for a given log file.
+    fn title_owner(&self, path: &PathBuf) -> Option<String> {
+        self.sessions
+            .iter()
+            .find(|s| s.file_path == *path)
+            .map(|s| s.project_path.clone())
     }
 
     /// Open the transcript viewer for the selected session row.
@@ -959,6 +1013,8 @@ KEYS (session tree):
     j k h l           move, fold, unfold        (arrows work too)
                       subagent sessions nest under the session that spawned
                       them, folded until you open them
+    c                 resume the session: replaces this process with
+                      `claude -r <id>`, run from its project directory
     r                 rename the selected session
     -                 fold / unfold the node under the cursor
     gg G              first / last row
@@ -1019,17 +1075,13 @@ fn main() -> io::Result<()> {
 
     let mut app = App::new(cli.all)?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    enter_terminal(&mut terminal)?;
 
     let result = run(&mut terminal, &mut app);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    leave_terminal(&mut terminal)?;
     result
 }
 
@@ -1044,7 +1096,55 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                 return Ok(());
             }
         }
+        // `claude` needs the real terminal, so this can only happen out here,
+        // between draws, where the TUI can be torn down and rebuilt.
+        if let Some(r) = app.resume.take() {
+            resume_session(terminal, app, r)?;
+        }
     }
+}
+
+/// Hand the terminal and the process over to `claude -r <id>`, run in the
+/// session's project directory. On success this never returns: the manager is
+/// replaced, so claude is left as the only thing on the terminal rather than
+/// running underneath a suspended TUI. Control comes back only if the exec
+/// itself failed, in which case the TUI is restored and the reason reported.
+fn resume_session<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    r: Resume,
+) -> io::Result<()> {
+    leave_terminal(terminal)?;
+
+    let err = resume_command(&r).exec();
+
+    enter_terminal(terminal)?;
+    app.status = Some(match err.kind() {
+        io::ErrorKind::NotFound => "`claude` not found on PATH".to_string(),
+        _ => format!("could not run claude: {}", err),
+    });
+    Ok(())
+}
+
+/// `claude -r <session-id>`, run from the session's own project directory.
+fn resume_command(r: &Resume) -> std::process::Command {
+    let mut cmd = std::process::Command::new("claude");
+    cmd.arg("-r").arg(&r.id).current_dir(&r.cwd);
+    cmd
+}
+
+fn enter_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    Ok(())
+}
+
+fn leave_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1166,7 @@ const HELP_TREE: &[(&str, &str)] = &[
     ("ctrl-a", "current directory / all sessions"),
     ("ctrl-r", "fold / unfold every session node"),
     ("ctrl-t", "match titles / full text"),
+    ("c", "resume with `claude -r` and exit this app"),
     ("r", "rename the selected session"),
     ("space", "mark / unmark (session: + its subagents)"),
     ("d, del", "delete marked, or the selected session"),
@@ -1096,7 +1197,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     // Modal overlays consume keys before anything else.
     if let Some(paths) = app.confirm_delete.clone() {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 app.confirm_delete = None;
                 app.delete_paths(&paths);
             }
@@ -1256,6 +1357,7 @@ fn handle_tree_key(app: &mut App, key: KeyEvent, ctrl: bool) -> bool {
         KeyCode::Char('G') | KeyCode::End => app.move_sel(isize::MAX / 2),
 
         // folding
+        KeyCode::Char('c') if !ctrl => app.request_resume(),
         KeyCode::Char('r') if !ctrl => app.begin_rename(),
         KeyCode::Char('-') => app.toggle_node(),
         KeyCode::Char('h') | KeyCode::Left => app.collapse(),
@@ -1671,7 +1773,7 @@ fn draw_tree(f: &mut ratatui::Frame, app: &mut App) {
                     *latest,
                     *folded,
                     marks.dir_mark(children),
-                    inner.width as usize - MARK_W,
+                    (inner.width as usize).saturating_sub(MARK_W),
                 ),
                 RowItem::Session {
                     idx,
@@ -1712,10 +1814,10 @@ fn draw_tree(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn draw_rename(f: &mut ratatui::Frame, app: &App) {
-    let w = ((f.area().width as u32 * 70 / 100) as u16).clamp(40, f.area().width);
+    let w = ((f.area().width as u32 * 70 / 100) as u16).max(40).min(f.area().width);
     let h = 7u16.min(f.area().height);
     let area = Rect {
-        x: f.area().x + (f.area().width - w) / 2,
+        x: f.area().x + f.area().width.saturating_sub(w) / 2,
         y: f.area().y + (f.area().height.saturating_sub(h)) / 2,
         width: w,
         height: h,
@@ -1819,7 +1921,7 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
     let with_dirs = paths.iter().filter(|p| p.with_extension("").is_dir()).count();
     let shown = paths.len().min(LIST_MAX);
 
-    let w = ((f.area().width as u32 * 78 / 100) as u16).clamp(40, f.area().width);
+    let w = ((f.area().width as u32 * 78 / 100) as u16).max(40).min(f.area().width);
     let text_w = w.saturating_sub(4) as usize;
 
     let mut lines: Vec<Line> = vec![
@@ -1872,11 +1974,11 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("  Press [y] to confirm, [n]/[esc] to cancel."));
+    lines.push(Line::from("  Press [y]/[enter] to confirm, [n]/[esc] to cancel."));
 
     let h = (lines.len() as u16 + 2).min(f.area().height);
     let area = Rect {
-        x: f.area().x + (f.area().width - w) / 2,
+        x: f.area().x + f.area().width.saturating_sub(w) / 2,
         y: f.area().y + (f.area().height.saturating_sub(h)) / 2,
         width: w,
         height: h,
@@ -2493,6 +2595,8 @@ fn md_to_lines(src: &str, indent: &str) -> Vec<Line<'static>> {
     }
     out
 }
+
+
 
 
 
