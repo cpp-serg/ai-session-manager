@@ -79,13 +79,14 @@ Navigation is vim-style, and arrow keys work everywhere too.
 | `/` | filter; `enter` accepts, `esc` cancels |
 | `esc` | clear marks, then the filter |
 | `space` | mark for deletion; a session takes its subagents, a directory inverts its children |
-| `d` `del` | delete what is marked, else the selected session (`y`/`enter` confirms) |
+| `d` `del` | delete what is marked, else the selected session (`y`, `enter` or a second `del` confirms) |
 | `c` | resume it: replaces this app with `claude -r <id>`, run from the project's directory |
 | `r` | rename the selected session |
 | `ctrl-e` | fold or unfold everything |
 | `ctrl-r` | fold or unfold every session node |
 | `ctrl-a` | current directory / all sessions |
 | `ctrl-t` | match titles / full text |
+| `ctrl-s` | plain substring / fuzzy matching |
 | `f1` | key help |
 | `q` `ctrl-c` | quit |
 
@@ -95,7 +96,10 @@ thinking blocks, `o` expands truncated tool output, `esc` or `q` returns to the 
 ## Notes
 
 **Search.** Filtering matches titles by default and the entire transcript with `ctrl-t`.
-It is fuzzy, with smart case. A renamed session still matches the name it used to have.
+It is a plain substring match by default: the filter, spaces included, must appear as typed,
+case-insensitively unless it has a capital letter. `ctrl-s` switches to fuzzy matching, which
+splits the filter into words and takes fzf syntax (`'exact`, `^prefix`, `suffix$`, `!not`).
+A renamed session still matches the name it used to have.
 
 **Renaming** appends the same record `/rename` writes, so it is compatible with Claude Code
 and never rewrites existing history. It does update the file's timestamp, so the row moves

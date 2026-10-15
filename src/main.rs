@@ -10,7 +10,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -37,6 +37,15 @@ struct Session {
 enum MatchMode {
     OnlyTitle,
     FullText,
+}
+
+/// How the filter text is matched. Plain is the default; fuzzy is opt-in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Matching {
+    /// The filter as one literal substring, spaces included.
+    Plain,
+    /// nucleo's fzf-style syntax: space-separated fuzzy words, `'`, `^`, `$`, `!`.
+    Fuzzy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,6 +118,7 @@ struct App {
     /// Every session on the host, subagent transcripts included. Scanned once.
     sessions: Vec<Session>,
     match_mode: MatchMode,
+    matching: Matching,
     scope: Scope,
     cwd: String,
     filter: String,
@@ -156,6 +166,7 @@ impl App {
         let mut app = Self {
             sessions,
             match_mode: MatchMode::OnlyTitle,
+            matching: Matching::Plain,
             scope: if has_cwd_sessions { Scope::CurrentDir } else { Scope::All },
             cwd,
             filter: String::new(),
@@ -633,8 +644,17 @@ impl App {
     fn refresh_results(&mut self) {
         let sessions = &self.sessions;
 
-        let pattern = (!self.filter.is_empty())
-            .then(|| Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart));
+        let (case, norm) = (CaseMatching::Smart, Normalization::Smart);
+        let atoms: Vec<Atom> = if self.filter.is_empty() {
+            Vec::new()
+        } else {
+            match self.matching {
+                Matching::Plain => {
+                    vec![Atom::new(&self.filter, case, norm, AtomKind::Substring, false)]
+                }
+                Matching::Fuzzy => Pattern::parse(&self.filter, case, norm).atoms,
+            }
+        };
         let mut buf: Vec<char> = Vec::new();
         let mut keep: Vec<usize> = Vec::new();
 
@@ -642,14 +662,14 @@ impl App {
             if self.scope == Scope::CurrentDir && s.project_path != self.cwd {
                 continue;
             }
-            if let Some(p) = &pattern {
+            if !atoms.is_empty() {
                 let haystack = match self.match_mode {
                     MatchMode::OnlyTitle => s.search_text.as_str(),
                     MatchMode::FullText => s.full_text.as_str(),
                 };
                 buf.clear();
                 let utf32 = nucleo_matcher::Utf32Str::new(haystack, &mut buf);
-                if p.score(utf32, &mut self.matcher).is_none() {
+                if atoms.iter().any(|a| a.score(utf32, &mut self.matcher).is_none()) {
                     continue;
                 }
             }
@@ -1027,9 +1047,11 @@ KEYS (session tree):
     ctrl-a            current directory / all sessions
     ctrl-r            fold / unfold every session node (all subagents)
     ctrl-t            match titles / full text
+    ctrl-s            plain substring / fuzzy matching
     space             mark / unmark; a session takes its subagents with it,
                       a directory inverts its children
-    d, del            delete everything marked, else the selected session
+    d, del            delete everything marked, else the selected session;
+                      y, enter or a second del confirms
     f1                key help
     q, ctrl-c         quit
 
@@ -1166,6 +1188,7 @@ const HELP_TREE: &[(&str, &str)] = &[
     ("ctrl-a", "current directory / all sessions"),
     ("ctrl-r", "fold / unfold every session node"),
     ("ctrl-t", "match titles / full text"),
+    ("ctrl-s", "plain substring / fuzzy matching"),
     ("c", "resume with `claude -r` and exit this app"),
     ("r", "rename the selected session"),
     ("space", "mark / unmark (session: + its subagents)"),
@@ -1197,7 +1220,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     // Modal overlays consume keys before anything else.
     if let Some(paths) = app.confirm_delete.clone() {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter | KeyCode::Delete => {
                 app.confirm_delete = None;
                 app.delete_paths(&paths);
             }
@@ -1379,6 +1402,13 @@ fn handle_tree_key(app: &mut App, key: KeyEvent, ctrl: bool) -> bool {
             app.match_mode = match app.match_mode {
                 MatchMode::OnlyTitle => MatchMode::FullText,
                 MatchMode::FullText => MatchMode::OnlyTitle,
+            };
+            app.refresh_results();
+        }
+        KeyCode::Char('s') if ctrl => {
+            app.matching = match app.matching {
+                Matching::Plain => Matching::Fuzzy,
+                Matching::Fuzzy => Matching::Plain,
             };
             app.refresh_results();
         }
@@ -1702,10 +1732,14 @@ fn draw_tree(f: &mut ratatui::Frame, app: &mut App) {
         .split(f.area());
 
     let mode_label = format!(
-        "[{}|{}] ",
+        "[{}|{}|{}] ",
         match app.match_mode {
             MatchMode::OnlyTitle => "title",
             MatchMode::FullText => "full",
+        },
+        match app.matching {
+            Matching::Plain => "plain",
+            Matching::Fuzzy => "fuzzy",
         },
         match app.scope {
             Scope::CurrentDir => "cwd",
@@ -1974,7 +2008,7 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("  Press [y]/[enter] to confirm, [n]/[esc] to cancel."));
+    lines.push(Line::from("  Press [y]/[enter]/[del] to confirm, [n]/[esc] to cancel."));
 
     let h = (lines.len() as u16 + 2).min(f.area().height);
     let area = Rect {
