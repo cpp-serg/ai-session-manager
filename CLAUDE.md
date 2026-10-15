@@ -22,7 +22,7 @@ There are no tests in the tree; if adding any, run with `cargo test`.
 
 ## Architecture
 
-Single-binary Rust TUI (`src/main.rs`) that indexes Claude Code session logs, lets the user fuzzy-filter them, read them, rename them and delete them. There is one source file; the structure below is the conceptual layering inside it.
+Single-binary Rust TUI (`src/main.rs`) that indexes Claude Code session logs, lets the user filter them, read them, rename them and delete them. There is one source file; the structure below is the conceptual layering inside it.
 
 **Data source.** `~/.claude/projects/` contains one subdirectory per project (directory name is the project path with `/` replaced by `-`). Each `.jsonl` file inside a project directory is one session. Records are newline-delimited JSON objects with no schema guarantees across lines — the app cares about four record shapes:
 
@@ -35,7 +35,7 @@ Single-binary Rust TUI (`src/main.rs`) that indexes Claude Code session logs, le
 
 **One pre-scanned session set.** `App::new` walks the projects root once, all the way down, and keeps every `Session` in memory for the life of the app. Subagent transcripts are always read; they are hidden by folding, not by scanning less. There used to be a second shallow scan that `Ctrl-R` switched to, which meant holding a duplicate copy of every session's text — do not reintroduce it. After startup the only disk *writes* are deleting and renaming; the delete confirmation also stats each target to see whether it has a subagent directory.
 
-**Match modes.** `MatchMode::OnlyTitle` matches against `Session.search_text` (every title the session has had, plus the first user prompt); `MatchMode::FullText` matches against `Session.full_text` (the entire file, kept in memory). Both use `nucleo-matcher` with smart case and smart normalization. `App::refresh_results` is the single funnel — every state change (filter edit, mode toggle, scope toggle, fold toggle, delete, rename) calls it.
+**Match modes.** `MatchMode::OnlyTitle` matches against `Session.search_text` (every title the session has had, plus the first user prompt); `MatchMode::FullText` matches against `Session.full_text` (the entire file, kept in memory). Both use `nucleo-matcher` with smart case and smart normalization. Orthogonally, `App::matching` picks how the filter is read: `Matching::Plain` (the default) is one literal `AtomKind::Substring` atom, spaces included and no syntax; `Matching::Fuzzy` (`ctrl-s`) is `Pattern::parse`, i.e. space-separated fuzzy words plus fzf's `'`/`^`/`$`/`!`. Either way `refresh_results` holds a `Vec<Atom>` and a session survives only if every atom scores. `App::refresh_results` is the single funnel — every state change (filter edit, mode toggle, scope toggle, fold toggle, delete, rename) calls it.
 
 **Scope.** `Scope::CurrentDir` keeps only sessions whose `project_path` equals the process cwd; `Scope::All` keeps every session on the host. `App::new(force_all)` picks `CurrentDir` when the flag is unset and the scan found at least one session for the cwd, otherwise `All`. `Ctrl-A` toggles at runtime, so `-a`/`--all` only chooses the starting scope.
 
@@ -71,7 +71,7 @@ Wrapping is done by hand in `wrap_line` rather than by `Paragraph`'s `Wrap`, bec
 
 ## Keys
 
-Tree: `c` resumes the session with `claude -r`, replacing this process, `j k h l` and arrows move and fold, `gg`/`G` jump, `ctrl-f`/`ctrl-b` page, `ctrl-d`/`ctrl-u` half-page, `-` toggles a node, `Enter` opens a session or folds a directory, `/` filters, `Esc` clears marks then the filter, `space` marks, `d`/`Del` deletes (`y`/`Enter` confirms, `Esc`/`n` cancels), `r` renames, `ctrl-e` folds everything, `ctrl-r` folds every session node, `ctrl-a` switches scope, `ctrl-t` switches match mode, `F1` helps, `q` quits.
+Tree: `c` resumes the session with `claude -r`, replacing this process, `j k h l` and arrows move and fold, `gg`/`G` jump, `ctrl-f`/`ctrl-b` page, `ctrl-d`/`ctrl-u` half-page, `-` toggles a node, `Enter` opens a session or folds a directory, `/` filters, `Esc` clears marks then the filter, `space` marks, `d`/`Del` deletes (`y`/`Enter`/a second `Del` confirms, `Esc`/`n` cancels), `r` renames, `ctrl-e` folds everything, `ctrl-r` folds every session node, `ctrl-a` switches scope, `ctrl-t` switches match mode, `ctrl-s` switches plain/fuzzy matching, `F1` helps, `q` quits.
 
 Viewer: `j k` and arrows scroll, `ctrl-f`/`ctrl-b` and `ctrl-d`/`ctrl-u` page, `gg`/`G` jump, `t` toggles thinking, `o` expands tool output, `Esc`/`q` returns to the tree.
 
@@ -89,5 +89,5 @@ Viewer: `j k` and arrows scroll, `ctrl-f`/`ctrl-b` and `ctrl-d`/`ctrl-u` page, `
 - `handle_key` matches plain `Char(c)` arms before the `Char(c) if ctrl` ones, so any new letter binding needs an `if !ctrl` guard or it will swallow the control-key version. `r` versus `ctrl-r` is exactly this trap, and the compiler only warns about it as an unreachable pattern.
 - `handle_key` has several dispatch paths that return early (see **Modality** for the order). Add new tree bindings to `handle_tree_key`, not to an overlay handler.
 - Key help lives in four places that must stay in sync: `HELP_TREE` and `HELP_VIEWER` for the F1 overlay, the block titles in `draw_tree`/`draw_viewer`, the `USAGE` string for `--help`, and the **Keys** section above.
-- `Enter` confirms the delete popup as well as `y`, so nothing else may be bound to `Enter` while that popup is up.
+- `Enter` and `Del` confirm the delete popup as well as `y`, so nothing else may be bound to them while that popup is up.
 - Destructive work (delete, rename) is confirmed or reversible: deletion goes through the `confirm_delete` popup, and renaming only ever appends. Keep it that way.
