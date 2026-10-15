@@ -62,7 +62,12 @@ switches at any time.
 Sessions group under their project directory, newest first, and directories sort by their
 most recent session. Subagent transcripts nest under the session that spawned them and
 start folded. The age column is colored: green within a week, cyan within a month, orange
-within three, red beyond.
+within three, red beyond. A project whose directory no longer exists is shown in red,
+struck through, and tagged `(missing)`, so stale logs are easy to spot and prune; `c` refuses
+to resume into a directory that is gone.
+
+The header chip shows the current settings, e.g. `[title|plain|cwd]`: matching titles or
+full text, plain or fuzzy matching, and the current directory or all sessions.
 
 ## Keys
 
@@ -79,7 +84,7 @@ Navigation is vim-style, and arrow keys work everywhere too.
 | `/` | filter; `enter` accepts, `esc` cancels |
 | `esc` | clear marks, then the filter |
 | `space` | mark for deletion; a session takes its subagents, a directory inverts its children |
-| `d` `del` | delete what is marked, else the selected session (`y`, `enter` or a second `del` confirms) |
+| `d` `del` | delete what is marked, else the selected session, or every session under the selected directory (`y`, `enter` or a second `del` confirms; a multi-session delete gets a loud red warning) |
 | `c` | resume it: replaces this app with `claude -r <id>`, run from the project's directory |
 | `r` | rename the selected session |
 | `ctrl-e` | fold or unfold everything |
@@ -106,6 +111,9 @@ and never rewrites existing history. It does update the file's timestamp, so the
 to the top of its group.
 
 **Deleting** removes the session file and its subagent directory, and always asks first.
+`d` on a directory row takes every session the current filter shows under it. Whenever more
+than one session would go, the confirmation turns into a loud red warning with the count and
+the project.
 Marks are remembered by path, so a session marked before you filter or fold stays marked.
 
 **Performance.** Everything is read once at startup and held in memory, so filtering,

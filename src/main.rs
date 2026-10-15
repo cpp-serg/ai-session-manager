@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 
 struct Session {
@@ -99,6 +99,8 @@ enum RowItem {
         msgs: u32,
         latest: SystemTime,
         folded: bool,
+        /// The project directory is gone from disk, so the row is flagged.
+        missing: bool,
         /// Every session under this node, folded or not, so marking works either way.
         children: Vec<PathBuf>,
     },
@@ -136,6 +138,8 @@ struct App {
     /// True after a bare `g`, waiting for the second `g` of `gg`.
     pending_g: bool,
     folded: HashSet<String>,
+    /// Project paths that no longer exist on disk. Checked once, at startup.
+    missing_dirs: HashSet<String>,
     rows: Vec<RowItem>,
     match_count: usize,
     list_state: ListState,
@@ -163,6 +167,16 @@ impl App {
             .filter_map(|s| s.parent.as_ref())
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
+        // Only real paths are checked; "(unknown)" is a placeholder, not a directory.
+        let missing_dirs: HashSet<String> = sessions
+            .iter()
+            .map(|s| s.project_path.as_str())
+            .filter(|p| p.starts_with('/'))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|p| !Path::new(p).is_dir())
+            .map(str::to_string)
+            .collect();
         let mut app = Self {
             sessions,
             match_mode: MatchMode::OnlyTitle,
@@ -180,6 +194,7 @@ impl App {
             help: false,
             pending_g: false,
             folded,
+            missing_dirs,
             rows: Vec::new(),
             match_count: 0,
             list_state: ListState::default(),
@@ -589,18 +604,23 @@ impl App {
         }
     }
 
-    /// The paths `d` would delete: everything marked, else the selected session.
+    /// The paths `d` would delete: everything marked, else the selected row —
+    /// one session, or every session the filter leaves under a directory.
     fn delete_targets(&self) -> Vec<PathBuf> {
-        if !self.marked.is_empty() {
-            let mut v: Vec<PathBuf> = self.marked.iter().cloned().collect();
-            v.sort();
-            // Deleting a session removes its directory, so a marked subagent inside
-            // one would already be gone. Drop it rather than fail on it later.
-            let covered: Vec<PathBuf> = v.iter().map(|p| p.with_extension("")).collect();
-            v.retain(|p| !covered.iter().any(|c| p.starts_with(c)));
-            return v;
-        }
-        self.selected_file().into_iter().collect()
+        let mut v: Vec<PathBuf> = if !self.marked.is_empty() {
+            self.marked.iter().cloned().collect()
+        } else {
+            match self.selected_row() {
+                Some(RowItem::Dir { children, .. }) => children.clone(),
+                _ => self.selected_file().into_iter().collect(),
+            }
+        };
+        v.sort();
+        // Deleting a session removes its directory, so a subagent inside one
+        // would already be gone. Drop it rather than fail on it later.
+        let covered: Vec<PathBuf> = v.iter().map(|p| p.with_extension("")).collect();
+        v.retain(|p| !covered.iter().any(|c| p.starts_with(c)));
+        v
     }
 
     fn delete_paths(&mut self, paths: &[PathBuf]) {
@@ -736,6 +756,7 @@ impl App {
                 msgs,
                 latest: sessions[tops[0]].mtime,
                 folded: dir_folded,
+                missing: self.missing_dirs.contains(path),
                 children,
             });
             if dir_folded {
@@ -1050,7 +1071,8 @@ KEYS (session tree):
     ctrl-s            plain substring / fuzzy matching
     space             mark / unmark; a session takes its subagents with it,
                       a directory inverts its children
-    d, del            delete everything marked, else the selected session;
+    d, del            delete everything marked, else the selected session,
+                      or on a directory every session under it;
                       y, enter or a second del confirms
     f1                key help
     q, ctrl-c         quit
@@ -1192,7 +1214,7 @@ const HELP_TREE: &[(&str, &str)] = &[
     ("c", "resume with `claude -r` and exit this app"),
     ("r", "rename the selected session"),
     ("space", "mark / unmark (session: + its subagents)"),
-    ("d, del", "delete marked, or the selected session"),
+    ("d, del", "delete marked, or the selected session / directory"),
     ("f1", "this help"),
     ("q, ctrl-c", "quit"),
 ];
@@ -1600,11 +1622,24 @@ fn dir_line(
     msgs: u32,
     latest: SystemTime,
     folded: bool,
+    missing: bool,
     mark: Mark,
     width: usize,
 ) -> Line<'static> {
     let meta = Style::default().fg(META);
-    let head = format!("{} {}", if folded { "▸" } else { "▾" }, path);
+    let marker = format!("{} ", if folded { "▸" } else { "▾" });
+    // A project whose directory is gone: red, struck through, and said in words,
+    // since not every terminal draws strikethrough.
+    let gone = if missing { " (missing)" } else { "" };
+    let path_style = if missing {
+        Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD | Modifier::CROSSED_OUT)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
     let stats = format!(
         "{} session{}{} · {} msg{} · ",
         count,
@@ -1619,16 +1654,24 @@ fn dir_line(
     );
     let age = format_age(latest);
 
-    let used = head.chars().count() + stats.chars().count() + age.chars().count();
+    let used = marker.chars().count()
+        + path.chars().count()
+        + gone.chars().count()
+        + stats.chars().count()
+        + age.chars().count();
     let mut spans = vec![
         mark_span(mark),
         Span::styled(
-            head.clone(),
+            marker,
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(path.to_string(), path_style),
     ];
+    if missing {
+        spans.push(Span::styled(gone, Style::default().fg(Color::LightRed)));
+    }
     if used + 2 <= width {
         // A dim rule carries the eye from the path across to the stats.
         spans.push(Span::styled(
@@ -1798,6 +1841,7 @@ fn draw_tree(f: &mut ratatui::Frame, app: &mut App) {
                     msgs,
                     latest,
                     folded,
+                    missing,
                     children,
                 } => dir_line(
                     path,
@@ -1806,6 +1850,7 @@ fn draw_tree(f: &mut ratatui::Frame, app: &mut App) {
                     *msgs,
                     *latest,
                     *folded,
+                    *missing,
                     marks.dir_mark(children),
                     (inner.width as usize).saturating_sub(MARK_W),
                 ),
@@ -1955,20 +2000,57 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
     let with_dirs = paths.iter().filter(|p| p.with_extension("").is_dir()).count();
     let shown = paths.len().min(LIST_MAX);
 
+    // More than one session goes at once: say so loudly, so a `d` on a directory
+    // or a forgotten mark cannot be waved through as if it were a single delete.
+    let many = paths.len() > 1;
     let w = ((f.area().width as u32 * 78 / 100) as u16).max(40).min(f.area().width);
     let text_w = w.saturating_sub(4) as usize;
+    let alarm = Style::default()
+        .fg(Color::White)
+        .bg(Color::Red)
+        .add_modifier(Modifier::BOLD);
+    let loud = Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD);
 
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            if paths.len() == 1 {
-                "Delete this session?".to_string()
-            } else {
-                format!("Delete these {} sessions?", paths.len())
-            },
-            Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
+    let mut lines: Vec<Line> = if many {
+        let banner = format!("⚠  PERMANENTLY DELETE {} SESSIONS  ⚠", paths.len());
+        // The banner spans the whole inner width, border to border.
+        let pad = (w.saturating_sub(2) as usize).saturating_sub(banner.chars().count());
+        let mut v = vec![Line::from(Span::styled(
+            format!(
+                "{}{}{}",
+                " ".repeat(pad / 2),
+                banner,
+                " ".repeat(pad - pad / 2)
+            ),
+            alarm,
+        ))];
+        // A directory delete, or marks that all sit in one project: name it.
+        let mut projects: Vec<String> =
+            paths.iter().filter_map(|p| app.title_owner(p)).collect();
+        projects.sort();
+        projects.dedup();
+        if let [only] = projects.as_slice() {
+            v.push(Line::from(vec![
+                Span::styled("  all from ", loud),
+                Span::styled(
+                    fit(only, text_w.saturating_sub(11)),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else if projects.len() > 1 {
+            v.push(Line::from(Span::styled(
+                format!("  across {} projects", projects.len()),
+                loud,
+            )));
+        }
+        v.push(Line::from(""));
+        v
+    } else {
+        vec![
+            Line::from(Span::styled("Delete this session?", loud)),
+            Line::from(""),
+        ]
+    };
     // Titles read far better than uuid paths; the short id disambiguates them.
     for p in paths.iter().take(shown) {
         let id: String = p
@@ -2008,7 +2090,16 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("  Press [y]/[enter]/[del] to confirm, [n]/[esc] to cancel."));
+    if many {
+        lines.push(Line::from(Span::styled("  This cannot be undone.", loud)));
+        lines.push(Line::from(vec![
+            Span::raw("  Press "),
+            Span::styled("[y]/[enter]/[del]", loud),
+            Span::raw(" to delete them all, [n]/[esc] to cancel."),
+        ]));
+    } else {
+        lines.push(Line::from("  Press [y]/[enter]/[del] to confirm, [n]/[esc] to cancel."));
+    }
 
     let h = (lines.len() as u16 + 2).min(f.area().height);
     let area = Rect {
@@ -2020,10 +2111,21 @@ fn draw_confirm(f: &mut ratatui::Frame, app: &App) {
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
-                .title("confirm delete"),
+            if many {
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Thick)
+                    .border_style(loud)
+                    .title(Span::styled(
+                        format!(" ⚠ DELETE {} SESSIONS ⚠ ", paths.len()),
+                        alarm,
+                    ))
+            } else {
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red))
+                    .title("confirm delete")
+            },
         ),
         area,
     );
