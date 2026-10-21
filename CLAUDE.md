@@ -91,3 +91,12 @@ Viewer: `j k` and arrows scroll, `ctrl-f`/`ctrl-b` and `ctrl-d`/`ctrl-u` page, `
 - Key help lives in four places that must stay in sync: `HELP_TREE` and `HELP_VIEWER` for the F1 overlay, the block titles in `draw_tree`/`draw_viewer`, the `USAGE` string for `--help`, and the **Keys** section above.
 - `Enter` and `Del` confirm the delete popup as well as `y`, so nothing else may be bound to them while that popup is up.
 - Destructive work (delete, rename) is confirmed or reversible: deletion goes through the `confirm_delete` popup, and renaming only ever appends. Keep it that way.
+
+## Repository
+
+- **Public on GitHub** at `git@github.com:cpp-serg/ai-session-manager.git`. Work goes straight onto `master` and is pushed there; there is no pull request flow.
+- **Personal identity, not the work one.** Commits are authored as `Sergey Pastukhov <sergey.pastukhov@gmail.com>`, set in this clone's own `.git/config` (`git config --local user.name/user.email`). A fresh clone needs it set again before the first commit. `Cargo.toml`, `LICENSE` and the README name the same person.
+- **Nothing from the work machines goes in.** The repo is public, so README samples, CLAUDE.md, comments and commit messages use neutral placeholders (`/home/dev/webapp`, `fix/checkout`) rather than real session titles, project paths, branch names, ticket keys or customer names. Leaks were scrubbed out of the history once; grep a new example before committing it.
+- **Run the CI gate locally before pushing**: the release build, `clippy --release --all-targets --locked -- -D warnings`, `cargo test --release --locked` and `--help`. If one session's work is committed in several commits, each of them passes on its own.
+- **Users download** `https://github.com/cpp-serg/ai-session-manager/releases/latest/download/ai-session-manager`, with a `.sha256` next to it. That works only because `release.yml` also uploads the binary under a name with no version in it; keep that asset when changing the workflow.
+- **No `gh` CLI or GitHub token** is set up; SSH pushes work as `cpp-serg`. Unauthenticated API calls are limited to 60 an hour, which polling a release run uses up quickly. To see whether a release has landed, request the download URL instead.
