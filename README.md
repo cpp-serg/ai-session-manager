@@ -96,7 +96,8 @@ Navigation is vim-style, and arrow keys work everywhere too.
 | `q` `ctrl-c` | quit |
 
 In the transcript viewer: `j`/`k` scroll, `ctrl-f`/`ctrl-b` page, `gg`/`G` jump, `t` shows
-thinking blocks, `o` expands truncated tool output, `esc` or `q` returns to the tree.
+thinking blocks, `o` expands truncated tool output, `c` resumes the session as it does from
+the tree, `esc` or `q` returns to the tree.
 
 ## Notes
 

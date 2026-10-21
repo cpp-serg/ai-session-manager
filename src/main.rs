@@ -492,27 +492,28 @@ impl App {
     }
 
     /// Ask the run loop to resume the selected session with the `claude` CLI.
-    /// On a subagent row this resumes the session that spawned it, since an
-    /// `agent-*` transcript is not itself a resumable session id.
     fn request_resume(&mut self) {
         let Some(i) = self.list_state.selected() else {
             return;
         };
-        let RowItem::Session { idx, depth, .. } = self.rows[i] else {
+        let RowItem::Session { idx, .. } = self.rows[i] else {
             self.status = Some("select a session to resume".to_string());
             return;
         };
-        let Some(s) = self.sessions.get(idx) else {
+        let Some(path) = self.sessions.get(idx).map(|s| s.file_path.clone()) else {
             return;
         };
-        let path = if depth == 2 {
-            match s.parent.clone() {
-                Some(p) => p,
-                None => s.file_path.clone(),
-            }
-        } else {
-            s.file_path.clone()
+        self.request_resume_file(&path);
+    }
+
+    /// Resume the session logged in `file`. A subagent resumes the session that
+    /// spawned it, since an `agent-*` transcript is not itself a resumable
+    /// session id — even when its parent was filtered out and it sits at top level.
+    fn request_resume_file(&mut self, file: &PathBuf) {
+        let Some(s) = self.sessions.iter().find(|s| s.file_path == *file) else {
+            return;
         };
+        let path = s.parent.clone().unwrap_or_else(|| s.file_path.clone());
         let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
             return;
         };
@@ -1084,6 +1085,7 @@ KEYS (session viewer):
     gg G              top / bottom
     t                 show or hide thinking blocks
     o                 expand or collapse tool output
+    c                 resume the session, as in the tree
     esc, q            back to the session tree
 ";
 
@@ -1227,6 +1229,7 @@ const HELP_VIEWER: &[(&str, &str)] = &[
     ("pgdn / pgup", "page down / up"),
     ("t", "show or hide thinking blocks"),
     ("o", "expand or collapse tool output"),
+    ("c", "resume with `claude -r` and exit this app"),
     ("esc, q", "back to the session tree"),
     ("f1", "this help"),
     ("ctrl-c", "quit"),
@@ -1313,6 +1316,7 @@ fn handle_rename_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_viewer_key(app: &mut App, key: KeyEvent, ctrl: bool) {
+    app.status = None;
     let Some(v) = app.viewer.as_mut() else {
         app.focus = Focus::Tree;
         return;
@@ -1349,6 +1353,10 @@ fn handle_viewer_key(app: &mut App, key: KeyEvent, ctrl: bool) {
         KeyCode::Char('o') => {
             v.expand_tools = !v.expand_tools;
             v.rebuild();
+        }
+        KeyCode::Char('c') if !ctrl => {
+            let path = v.path.clone();
+            app.request_resume_file(&path);
         }
         KeyCode::F(1) => app.help = true,
         _ => {}
@@ -1514,11 +1522,13 @@ fn draw_viewer(f: &mut ratatui::Frame, app: &mut App) {
             ),
             Style::default().fg(META),
         ),
+        // A failed `c` reports here, or the key would look like it did nothing.
+        Span::raw(app.status.as_ref().map(|s| format!("  —  {}", s)).unwrap_or_default()),
     ]))
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title("session  (esc/q: back, j/k: scroll, t: thinking, o: tool output, f1: help)"),
+            .title("session  (esc/q: back, j/k: scroll, t: thinking, o: tool output, c: resume, f1: help)"),
     );
     f.render_widget(head, chunks[0]);
 
