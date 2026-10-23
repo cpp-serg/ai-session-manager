@@ -42,6 +42,12 @@ cargo build --release
 ./target/release/ai-session-manager --help   # full key list
 ```
 
+`./build.sh` wraps the same with the build tree in `build/` (`--musl` for the static
+binary, `--clippy`/`--test` for the CI checks, `--help` for the rest). `./build.sh --cont`
+runs that build inside a container image instead (`rl8-build` by default, `--cont=IMAGE`
+for another) through the `sp-cont-build` helper, with its output in `cont_build/`
+(`cont_build-<image>/` for another image).
+
 It starts scoped to the directory you launch it from, and falls back to showing everything
 if that directory has no sessions. `-a`/`--all` only picks the starting scope; `ctrl-a`
 switches at any time.
